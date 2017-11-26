@@ -2,6 +2,7 @@ const SteamUser = require('steam-user');
 const SteamTotp = require('steam-totp');
 const SteamCommunity = require('steamcommunity');
 const TradeOfferManager = require('steam-tradeoffer-manager');
+
 var wait = require('wait.for');
 var mysql      = require('mysql');
 var connection = mysql.createConnection({
@@ -28,12 +29,12 @@ const logOnOptions = {
 };
 client.logOn(logOnOptions);
 
-/*DBDEN ITEMLARIN FIYATLARINI CEKER*/
-setInterval(getItemsPrice(),20000);
-/*Gelen Satın Alma İsteklerini Kontrol eder ve Yollar*/
-setInterval(wait.launchFiber(checkBuyRequest),5000);
-/*Bot ile Sitedeki Marketi Eşler*/
-setInterval(getMyItems(),20000);
+
+
+
+
+
+
 
 
 
@@ -41,6 +42,13 @@ setInterval(getMyItems(),20000);
 client.on("loggedOn",function(){
 	client.setPersona(SteamUser.Steam.EPersonaState.Online);
 	console.log("Giriş Yapıldı.");
+
+	
+	/*Bot ile Sitedeki Marketi Eşler*/
+	IntervalSet(Setup,20000);
+
+	
+
 })
 client.on("webSession",function(sessionid,cookies){
 	manager.setCookies(cookies);
@@ -49,6 +57,8 @@ client.on("webSession",function(sessionid,cookies){
 	
 	
 });
+
+
 
 manager.on("newOffer", function(offer){
 	var SenderSteamID = offer.partner.getSteamID64();
@@ -150,9 +160,9 @@ function getMyItems()
 			var ItemsArray = [];
 			for (var i =0; i < inventory.length; i++)
 			{
-				ItemsArray.push("('"+inventory[i].market_hash_name+"')");
+				ItemsArray.push("('"+inventory[i].id+"','"+inventory[i].market_hash_name+"')");
 			}
-			connection.query("insert into inventory (market_hash_name) values"+ItemsArray.join(),function(err,rows,field){
+			connection.query("insert into inventory (UID,market_hash_name) values"+ItemsArray.join(),function(err,rows,field){
 				if(err) throw err;
 				console.log("Envanter Veritabanına Aktarıldı.");
 			});
@@ -162,10 +172,14 @@ function getMyItems()
 
 
 
-function removeMyItemFromDB(Item)
+function removeMyItemsFromDB(Items)
 {
-	var ItemName = Item.market_hash_name;
-	//TODO Item silinmesi için gerekli olan komut yazılacak
+	for(i=0;i<Items.length;i++)
+	{
+		var Item = Items.id;
+		wait.forMethod(connection,"query","DELETE FROM inventory WHERE UID = '"+Item.id+"'");
+	}
+	console.log("Gonderilen Itemlar Silindi.");
 }
 function createOffer(Items,TradeURL)
 {
@@ -174,25 +188,36 @@ function createOffer(Items,TradeURL)
 	{
 		var aItem = Items[i];
 		Offer.addMyItem(aItem);
-		removeMyItemFromDB(aItem);
 	}
 	return Offer;
 }
 function getBuyRequest()
 {
-	var Result = wait.forMethod(connection,"query", "select b.items,u.trade_url from buys b inner join users u on u.steamid=b.steamid  where b.status='0' and u.trade_url!=''");
+	var Result = wait.forMethod(connection,"query", "select b.id,b.items,u.trade_url from buys b inner join users u on u.steamid=b.steamid  where b.status='0' and u.trade_url!=''");
 	var ReqArr = [];
 	for(var i = 0; i<Result.length;i++)
 	{
 		var itemsToSend = Result[i].items.split(",");
 		var TradeURL = Result[i].trade_url;
-		ReqArr.push({"Items":itemsToSend},{"TradeURL":TradeURL});
+		var BID = Result[i].id;
+		ReqArr.push({"Items":itemsToSend,"TradeURL":TradeURL,"ID":BID});
 	}
 	return ReqArr;
 }
+
+function OnTradeSent()
+{
+	//TODO Trade yollandı trade durumunu güncelle.
+}
+
 function checkBuyRequest()
 {
-	var ReqArr = getBuyRequest();
+	console.log("Satın Alma İşlemleri Kontrol Ediliyor...");
+
+	var ReqArr = getBuyRequest(); //Istek Listesi
+
+	console.log(ReqArr.length + " Adet İstek Bulundu.");
+
 	for(var i = 0; i<ReqArr.length;i++)
 	{
 		var aReq = ReqArr[i];
@@ -201,6 +226,7 @@ function checkBuyRequest()
 		var itemsToOffer = [];
 		for(var j = 0; j<Inv.length; j++)
 		{
+			
 			var aItem = Inv[j];
 			//Inventory de bulunan itemleri ekle
 			if((aReq.Items.indexOf(aItem.market_hash_name)) > -1)
@@ -208,16 +234,47 @@ function checkBuyRequest()
 						var index = aReq.Items.indexOf(aItem.market_hash_name);
 						itemsToOffer.push(aItem);
 						aReq.Items.splice(index,1);
-			}
-			// İstekteki bütün itemler bulunmuşsa offer oluştur ve yolla.
+			}		
+		}
+		// İstekteki bütün itemler bulunmuşsa offer oluştur ve yolla.
 			if(aReq.Items.length < 1)
 			{
+				console.log("ID = "+ aReq.ID + "Geçerli Trade Yollanıyor... ");
+
 				var aOffer = createOffer(itemsToOffer,aReq.TradeURL);
 				var Result = wait.forMethod(aOffer,"send");
-				console.log(Result);
-				//TODO TRADE YOLLAMA SONUCUNA GORE ISLEM YAPILACAK.
-			}
+				console.log("ID = "+ aReq.ID + "Sonuç = " + Result);
+				if(Result=="pending")
+				{
+					console.log("ID = " + aOffer.id  +" Trade Onay Bekliyor");
+				}
+				else if(Result == "sent")
+				{
+					console.log("ID = " + aOffer.id  +" Trade yollandı.");
+				}
+				removeMyItemsFromDB(aReq.Items);
+				wait.forMethod(connection,"query","UPDATE buys set OfferID = '"+aOffer.id+"',Status='"+aOffer.state+"' WHERE ID='"+aReq.ID+"'"); // İsteğin Offer numarsını güncelle. Trade Durumunu Güncelle
 
-		}
+				
+			}
+			else
+			{
+				console.log("ID = "+ aReq.ID + "Botta Itemlar Bulunamadi.");
+			}
 	}
+}
+
+function Setup()
+{
+	
+	/*DBDEN ITEMLARIN FIYATLARINI CEKER*/
+	getItemsPrice();
+	getMyItems();
+	/*Gelen Satın Alma İsteklerini Kontrol eder ve Yollar*/
+	wait.launchFiber(checkBuyRequest);
+}
+
+function IntervalSet(funct,time)
+{
+	setInterval(()=>{setTimeout(funct,time)},time);
 }
