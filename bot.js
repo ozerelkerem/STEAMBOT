@@ -30,15 +30,6 @@ const logOnOptions = {
 client.logOn(logOnOptions);
 
 
-
-
-
-
-
-
-
-
-
 client.on("loggedOn",function(){
 	client.setPersona(SteamUser.Steam.EPersonaState.Online);
 	console.log("Giriş Yapıldı.");
@@ -62,12 +53,17 @@ client.on("webSession",function(sessionid,cookies){
 
 manager.on("newOffer", function(offer){
 	var SenderSteamID = offer.partner.getSteamID64();
-	console.log(SenderSteamID + " steamidli üyeden trade isteği geldi");
+	console.log(SenderSteamID + " steamidli üyeden trade isteği geldi " + offer.id);
 	if(offer.itemsToGive.length==0)
 	{
 		//acceptOffer(offer);
 		var totalValue = calculateItemsValue(offer.itemsToReceive);
 		sendValueToUser(SenderSteamID,totalValue,getItemsString(offer.itemsToReceive));
+		console.log("ID = " + offer.id + " Değer = " + totalValue + " Kabul Edildi");
+	}
+	else
+	{
+		console.log("ID = " + offer.id + " Item İsteğinde bulundu beklemeye alındı.");	
 	}
 })
 function acceptOffer(offer)
@@ -210,6 +206,32 @@ function OnTradeSent()
 	//TODO Trade yollandı trade durumunu güncelle.
 }
 
+function getWaitingOffers()
+{
+	var Result = wait.forMethod(connection,"query", "select b.status,b.steamid,b.OfferID,b.SteamID,b.Price from buys b inner join users u on u.steamid=b.steamid  where b.status='0' or b.status='2' or b.status='9'");
+	console.log(Result.length + " Adet Bekleyen İstekler Bulundu");
+
+	for(i=0;i<Result.length;i++)
+	{
+		var aReq = Result[i];
+		var aReqStatus = aReq.status;
+		var OfferID = aReq.OfferID;
+		var OfferValue = aReq.Price;
+		var SteamID = aReq.SteamID;
+		var Offer = wair.forMethod(manager,"getOffer",OfferID);
+
+		if((Offer.state == 1) || (Offer.state == 5) || (Offer.state == 6) || (Offer.state == 7) || (Offer.state == 8) || (Offer.state == 10))
+		{
+			wait.forMethod(connection,"query","UPDATE buys set status = '-1' where OfferID = '"+OfferID+"'");
+			console.log("ID = " + OfferID + " Takas Başarısız. Kullanıcıya Para İade Edilecek...");
+			wait.forMethod(connection,"query","update users set balance = balance + '"+OfferValue+"' WHERE SteamID = '"+SteamID+"'");
+			console.log("ID = " + SteamID + " Bakiye Eklendi Değer = " + OfferValue);
+		}
+	}
+}
+
+	
+
 function checkBuyRequest()
 {
 	console.log("Satın Alma İşlemleri Kontrol Ediliyor...");
@@ -243,7 +265,7 @@ function checkBuyRequest()
 
 				var aOffer = createOffer(itemsToOffer,aReq.TradeURL);
 				var Result = wait.forMethod(aOffer,"send");
-				console.log("ID = "+ aReq.ID + "Sonuç = " + Result);
+				console.log("ID = "+ aReq.ID + " Sonuç = " + Result);
 				if(Result=="pending")
 				{
 					console.log("ID = " + aOffer.id  +" Trade Onay Bekliyor");
@@ -252,14 +274,14 @@ function checkBuyRequest()
 				{
 					console.log("ID = " + aOffer.id  +" Trade yollandı.");
 				}
-				removeMyItemsFromDB(aReq.Items);
+				removeMyItemsFromDB(aReq.Items); // Yollanan itemları siteden sil.
 				wait.forMethod(connection,"query","UPDATE buys set OfferID = '"+aOffer.id+"',Status='"+aOffer.state+"' WHERE ID='"+aReq.ID+"'"); // İsteğin Offer numarsını güncelle. Trade Durumunu Güncelle
 
 				
 			}
 			else
 			{
-				console.log("ID = "+ aReq.ID + "Botta Itemlar Bulunamadi.");
+				console.log("ID = "+ aReq.ID + " Botta Itemlar Bulunamadi.");
 			}
 	}
 }
@@ -269,9 +291,12 @@ function Setup()
 	
 	/*DBDEN ITEMLARIN FIYATLARINI CEKER*/
 	getItemsPrice();
+	/*Siteye Bottaki Itemlari Aktar*/
 	getMyItems();
 	/*Gelen Satın Alma İsteklerini Kontrol eder ve Yollar*/
 	wait.launchFiber(checkBuyRequest);
+
+	wait.launchFiber(getWaitingOffers);
 }
 
 function IntervalSet(funct,time)
